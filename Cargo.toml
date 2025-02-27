@@ -9,3 +9,4 @@ license = "MIT"
 [dependencies]
 protobuf-codegen = "3.7.1"
 serde_json = "1.0.114"
+quote = "1.0.38"

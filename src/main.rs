@@ -1,9 +1,9 @@
+use quote::{format_ident, quote, ToTokens};
+use serde_json::Value;
 use std::env;
 use std::fs::File;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-
-use serde_json::Value;
 
 fn main() {
     let args: Vec<String> = env::args().collect();
@@ -14,7 +14,7 @@ fn main() {
     let reliquary_path = Path::new(args[1].as_str());
     let data_path = Path::new(args[2].as_str());
 
-    protos(reliquary_path, data_path);
+    // protos(reliquary_path, data_path);
     packet_id(reliquary_path, data_path);
 }
 
@@ -23,14 +23,18 @@ fn protos(reliquary_path: &Path, data_path: &Path) {
 
     println!("scanning {}", proto_dir.display());
 
-    let protos: Vec<PathBuf> = proto_dir.read_dir()
+    let protos: Vec<PathBuf> = proto_dir
+        .read_dir()
         .unwrap()
         .map(|entry| entry.unwrap().path())
-        .filter(|path| path.file_name().unwrap()
-            .to_str().unwrap()
-            .to_string()
-            .ends_with(".proto")
-        )
+        .filter(|path| {
+            path.file_name()
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .to_string()
+                .ends_with(".proto")
+        })
         .collect();
 
     for proto in protos.iter() {
@@ -39,7 +43,7 @@ fn protos(reliquary_path: &Path, data_path: &Path) {
 
     println!("generating protos");
 
-    let out_dir = reliquary_path.join("src/network/gen/proto");
+    let out_dir = reliquary_path.join("src/network/command/proto");
 
     protobuf_codegen::Codegen::new()
         .pure()
@@ -60,33 +64,41 @@ fn packet_id(reliquary_path: &Path, data_path: &Path) {
     let map: Value = serde_json::from_reader(json).unwrap();
     let map = map.as_object().unwrap();
 
-    let key_values: Vec<(&str, &str)> = map.iter().map(|(k, v)| (k.as_str(), v.as_str().unwrap())).collect();
+    let key_values: Vec<_> = map
+        .iter()
+        .map(|(k, v)| (k.as_str().parse::<u16>().unwrap(), v.as_str().unwrap()))
+        .collect();
 
-    // TODO: use quote crate
+    let constants = key_values.iter().map(|(id, s)| {
+        let ident = format_ident!("{}", s);
+        quote! {pub const #ident: u16 = #id;}
+    });
 
-    let mut output = "
-// @generated\n".to_string();
+    let match_branches = key_values.iter().map(|(id, s)| quote! {#id => Some(#s),});
+    let match_fn = quote! {
+        pub fn command_id_to_str(id: u16) -> Option<&'static str> {
+            match id {
+                #(#match_branches)*
+                _ => None
+            }
+        }
+    };
 
-    key_values.iter()
-        .map(|(id, s)| format!("pub const {s}: u16 = {id};\n"))
-        .for_each(|s| output.push_str(s.as_str()));
+    let tokens = quote! {
+        // @generated
+        #(#constants)*
+        #match_fn
+    };
 
-    output.push_str(r#"
+    println!("wrote packet ids to file");
+    let output_path = reliquary_path.join("src/network/command/command_id.rs");
+    std::fs::write(&output_path, tokens.to_string()).expect("to write command ids");
 
-pub fn command_id_to_str(id: u16) -> Option<&'static str> {
-    match id {
-"#);
-
-    key_values.iter()
-        .map(|(_, s)| format!(r#"        {s} => Some("{s}"),
-"#))
-        .for_each(|s| output.push_str(s.as_str()));
-
-    output.push_str(r#"
-        _ => None
-    }
-}"#);
-
-    let output_path = reliquary_path.join("src/network/gen/command_id.rs");
-    std::fs::write(output_path, output).expect("to write command ids");
+    println!("formatting file");
+    std::process::Command::new("rustfmt")
+        .arg(&output_path)
+        .spawn()
+        .unwrap()
+        .wait()
+        .unwrap();
 }
